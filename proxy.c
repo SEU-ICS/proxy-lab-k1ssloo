@@ -14,25 +14,25 @@ typedef struct {
     char *content;
     int *cnt; 
     int *is_used; 
-}object;
+} object;
 
 static object *cache;
 static int readcnt; 
-static sem_t readcnt_mutex, writer_mutex; /* and the mutex that pretects it */
+static sem_t readcnt_mutex, writer_mutex; /* and the mutex that protects it */
 
 /* helper function */
 void doit(int client_fd);
 void clienterror(int fd, char *cause, char *errnum, 
-		 char *shortmsg, char *longmsg);
+                 char *shortmsg, char *longmsg);
 void parse_uri(char *uri, char *hostname, char *path, int *port);
 void print_and_build_hdr(rio_t *rio_packet, char *new_request, char *hostname, char *port);
 void *thread(void *varge_ptr);
 void init_cache(void);
 static void init_mutex(void);
 int reader(int fd, char* url);
-void writer(int* buf, char* url);
+void writer(char* buf, char* url);
 
-/* boot proxy as server get connfd from client*/
+/* boot proxy as server get connfd from client */
 int main(int argc, char **argv) 
 {   
     init_cache();
@@ -44,19 +44,19 @@ int main(int argc, char **argv)
 
     /* Check command line args */
     if (argc != 2) {
-		fprintf(stderr, "usage: %s <port>\n", argv[0]);
-		exit(1);
+        fprintf(stderr, "usage: %s <port>\n", argv[0]);
+        exit(1);
     }
 
     listenfd = Open_listenfd(argv[1]);
     while (1) {
-		clientlen = sizeof(clientaddr);
+        clientlen = sizeof(clientaddr);
         connfd_ptr = Malloc(sizeof(int)); /* alloc memory of each thread to avoid race */
-		*connfd_ptr = Accept(listenfd, (SA *)&clientaddr, &clientlen); 
-    	Getnameinfo((SA *) &clientaddr, clientlen, hostname, MAXLINE, 
+        *connfd_ptr = Accept(listenfd, (SA *)&clientaddr, &clientlen); 
+        Getnameinfo((SA *) &clientaddr, clientlen, hostname, MAXLINE, 
                     port, MAXLINE, 0);
         printf("Accepted connection from (%s, %s)\n", hostname, port);
-		Pthread_create(&tid, NULL, thread, connfd_ptr);                                                                                    
+        Pthread_create(&tid, NULL, thread, connfd_ptr);                                                                                    
     }
     return 0;
 }
@@ -70,7 +70,7 @@ void *thread(void *varge_ptr){
     doit(connfd);
     Free(varge_ptr);
     Close(connfd);
-    return;
+    return NULL;
 }
 
 /*
@@ -80,14 +80,14 @@ void doit(int client_fd)
 {
     int real_server_fd;
     char buf[MAXLINE], method[MAXLINE], url[MAXLINE], version[MAXLINE];
-    char uri[MAXLINE], obj_buf[MAXLINE];
+    char uri[MAXLINE], obj_buf[MAX_OBJECT_SIZE] = {0};  // Initialize obj_buf
     rio_t real_client, real_server;
     char hostname[MAXLINE], path[MAXLINE];
     int port;
 
     /* Read request line and headers from real client */
     Rio_readinitb(&real_client, client_fd);
-    if (!Rio_readlineb(&real_client, buf, MAXLINE))  	 
+    if (!Rio_readlineb(&real_client, buf, MAXLINE))     
         return;
     sscanf(buf, "%s %s %s", method, uri, version);
     strcpy(url, uri);       
@@ -98,17 +98,17 @@ void doit(int client_fd)
     }
 
     /* if object of request from cache */
-    if(reader(client_fd, url)){
+    if (reader(client_fd, url)) {
         fprintf(stdout, "%s from cache\n", url);
         return;
     }
 
-    /* perpare for parse uri and build new request */
+    /* prepare for parse uri and build new request */
     parse_uri(uri, hostname, path, &port);
-    char port_str[0];
+    char port_str[10];
     sprintf(port_str, "%d", port); /* port from int convert to char */
     real_server_fd = Open_clientfd(hostname, port_str);  /* real server get fd from proxy(as client) */
-	if(real_server_fd < 0){
+    if (real_server_fd < 0) {
         printf("connection failed\n");
         return;
     }
@@ -124,29 +124,29 @@ void doit(int client_fd)
     /* then proxy as server respond to real client */
     int char_nums;
     int obj_size = 0;
-    while((char_nums = Rio_readlineb(&real_server, buf, MAXLINE))){
+    while ((char_nums = Rio_readlineb(&real_server, buf, MAXLINE))) {
         Rio_writen(client_fd, buf, char_nums);
 
-         /* perpare for write object to cache */
-         if(obj_size + char_nums < MAX_OBJECT_SIZE){
-            strcpy(obj_buf + obj_size, buf);
+        /* prepare for write object to cache */
+        if (obj_size + char_nums < MAX_OBJECT_SIZE) {
+            strncat(obj_buf, buf, char_nums);  // Use strncat to append
             obj_size += char_nums;
-         }
+        }
     }
 
-    if(obj_size < MAX_OBJECT_SIZE)
+    if (obj_size < MAX_OBJECT_SIZE) {
+        obj_buf[obj_size] = '\0';  // Ensure obj_buf ends with a null terminator
         writer(obj_buf, url);
+    }
 
     Close(real_server_fd);
 }
-
-
 
 /*
  * clienterror - returns an error message to the client
  */
 void clienterror(int fd, char *cause, char *errnum, 
-		 char *shortmsg, char *longmsg) 
+                 char *shortmsg, char *longmsg) 
 {
     char buf[MAXLINE], body[MAXBUF];
 
@@ -172,30 +172,19 @@ void clienterror(int fd, char *cause, char *errnum,
  */
 void parse_uri(char *uri, char *hostname, char *path, int *port) {
     *port = 80; /* default port */
-    char* ptr_hostname = strstr(uri,"//");
-    /* normal uri => http://hostname:port/path */
-    /* eg. uri => http://www.cmu.edu:8080/hub/index.html */
+    char* ptr_hostname = strstr(uri, "//");
     if (ptr_hostname) 
-        /* hostname_eg1. uri => http://hostname... */
         ptr_hostname += 2; 
     else
-        /* hostname_eg2. uri => hostname... <= NOT "http://"*/
         ptr_hostname = uri; 
     
     char* ptr_port = strstr(ptr_hostname, ":"); 
-    /* port_eg1. uri => ...hostname:port... */
     if (ptr_port) {
-        *ptr_port = '\0'; /* c-style: the end of string(hostname) is '\0' */
+        *ptr_port = '\0'; 
         strncpy(hostname, ptr_hostname, MAXLINE);
-
-        /* change default port to current port */
-        /* if path not char, sscanf will automatically store the ""(null) in the path */
         sscanf(ptr_port + 1,"%d%s", port, path); 
-    } 
-    /* port_eg1. uri => ...hostname... <= NOT ":port"*/
-    else {
-        char* ptr_path = strstr(ptr_hostname,"/");
-        /* path_eg1. uri => .../path */
+    } else {
+        char* ptr_path = strstr(ptr_hostname, "/");
         if (ptr_path) {
             *ptr_path = '\0';
             strncpy(hostname, ptr_hostname, MAXLINE);
@@ -203,24 +192,21 @@ void parse_uri(char *uri, char *hostname, char *path, int *port) {
             strncpy(path, ptr_path, MAXLINE);
             return;                               
         }
-        /* path_eg2. uri => ... <= NOT "/path"*/
         strncpy(hostname, ptr_hostname, MAXLINE);
-        strcpy(path,"");
+        strcpy(path, "");
     }
-    return;
 }
 
 /*
  * print_and_build_hdr - print old request_hdr then build and print new request_hdr
  */
-void print_and_build_hdr(rio_t *real_client, char *new_request, char *hostname, char *port){
+void print_and_build_hdr(rio_t *real_client, char *new_request, char *hostname, char *port) {
     char temp_buf[MAXLINE];
 
     /* print old request_hdr */
-    while(Rio_readlineb(real_client, temp_buf, MAXLINE) > 0){
-        if (strstr(temp_buf, "\r\n")) break; /* read to end */
+    while (Rio_readlineb(real_client, temp_buf, MAXLINE) > 0) {
+        if (strstr(temp_buf, "\r\n")) break; 
 
-        /* if all old request_hdr had been read, we print it */
         if (strstr(temp_buf, "Host:")) continue;
         if (strstr(temp_buf, "User-Agent:")) continue;
         if (strstr(temp_buf, "Connection:")) continue;
@@ -232,19 +218,19 @@ void print_and_build_hdr(rio_t *real_client, char *new_request, char *hostname, 
     /* build and print new request_hdr */
     sprintf(new_request, "%sHost: %s:%s\r\n", new_request, hostname, port);
     sprintf(new_request, "%s%s%s%s", new_request, user_agent_hdr, conn_hdr, proxy_hdr);
-    sprintf(new_request,"%s\r\n", new_request);
+    sprintf(new_request, "%s\r\n", new_request);
 }
 
 /*
  * initialize the cache
  */
-void init_cache(void){
+void init_cache(void) {
     init_mutex();
-    int readcnt = 0;
+    readcnt = 0;
     
-    /* cache is a Array of object*/
+    /* cache is a Array of object */
     cache = (object*)Malloc(MAX_CACHE_SIZE);
-    for(int i = 0; i < 10; i++){
+    for (int i = 0; i < 10; i++) {
         cache[i].url = (char*)Malloc(sizeof(char) * MAXLINE);
         cache[i].content = (char*)Malloc(sizeof(char) * MAX_OBJECT_SIZE);
         cache[i].cnt = (int*)Malloc(sizeof(int));
@@ -257,7 +243,7 @@ void init_cache(void){
 /*
  * initialize the mutex
  */
-static void init_mutex(void){
+static void init_mutex(void) {
     Sem_init(&readcnt_mutex, 0, 1);
     Sem_init(&writer_mutex, 0, 1);
 }
@@ -265,62 +251,58 @@ static void init_mutex(void){
 /*
  * reader - read from cache to real client
  */
-int reader(int fd, char* url){
-    while(1){
-        int from_cache = 0; /* equals 0 => obj not from cache; equals 1 => obj from cache */
+int reader(int fd, char* url) {
+    int from_cache = 0; 
 
-        P(&readcnt_mutex);
-        readcnt++;
-        if(readcnt == 1) /* First in */
-            P(&writer_mutex);
-        V(&readcnt_mutex);
+    P(&readcnt_mutex);
+    readcnt++;
+    if (readcnt == 1) 
+        P(&writer_mutex);
+    V(&readcnt_mutex);
 
-        /* obj from cache then we should write content to fd of real client */
-        for(int i = 0; i < NUMBERS_OBJECT; i++){
-            if(cache[i].is_used && (strcmp(url, cache[i].url) == 0)){
-                from_cache = 1;
-                Rio_writen(fd, cache[i].content, MAX_OBJECT_SIZE);
-                *(cache[i].cnt)++;
-                break;
-            }
+    /* obj from cache then we should write content to fd of real client */
+    for (int i = 0; i < NUMBERS_OBJECT; i++) {
+        if (*(cache[i].is_used) && (strcmp(url, cache[i].url) == 0)) {
+            from_cache = 1;
+            Rio_writen(fd, cache[i].content, strlen(cache[i].content));
+            *(cache[i].cnt)++;
+            break;
         }
-
-        P(&readcnt_mutex);
-        readcnt--;
-        if(readcnt == 0) /* last out */
-            V(&writer_mutex);
-        V(&readcnt_mutex);
-
-        return from_cache;        
     }
+
+    P(&readcnt_mutex);
+    readcnt--;
+    if (readcnt == 0) 
+        V(&writer_mutex);
+    V(&readcnt_mutex);
+
+    return from_cache;        
 }
 
 /*
  * writer - write from real server to cache
  */
-void writer(int* buf, char* url){
-    while(1){
-        int min_cnt = *(cache[0].cnt);
-        int insert_or_evict_i;
+void writer(char* buf, char* url) {
+    int min_cnt = *(cache[0].cnt);
+    int insert_or_evict_i = 0;
 
-        P(&writer_mutex);
+    P(&writer_mutex);
 
-        /* LRU: find the empty obj to insert or the obj of min cnt to evict */
-        for(int i = 0; i < NUMBERS_OBJECT; i++){
-            if(*(cache[i].is_used) == 0){ /* insert */
-                insert_or_evict_i = i;
-                break;
-            }
-            if(*(cache[i].cnt) < min_cnt){ /* evict */
-                insert_or_evict_i = i;
-                min_cnt = *(cache[i].cnt);
-            }
+    /* LRU: find the empty obj to insert or the obj of min cnt to evict */
+    for (int i = 0; i < NUMBERS_OBJECT; i++) {
+        if (*(cache[i].is_used) == 0) { 
+            insert_or_evict_i = i;
+            break;
         }
-        strcpy(cache[insert_or_evict_i].url, url);
-        strcpy(cache[insert_or_evict_i].content, buf);
-        *(cache[insert_or_evict_i].cnt) = 0;
-        *(cache[insert_or_evict_i].is_used) = 1;
-
-        V(&writer_mutex);
+        if (*(cache[i].cnt) < min_cnt) { 
+            insert_or_evict_i = i;
+            min_cnt = *(cache[i].cnt);
+        }
     }
+    strcpy(cache[insert_or_evict_i].url, url);
+    strcpy(cache[insert_or_evict_i].content, buf);
+    *(cache[insert_or_evict_i].cnt) = 0;
+    *(cache[insert_or_evict_i].is_used) = 1;
+
+    V(&writer_mutex);
 }
